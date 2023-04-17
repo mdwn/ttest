@@ -1,0 +1,71 @@
+private_key_file: /path/to/private-key.pem
+public_key_file: /path/to/public-key.pem
+lets_encrypt_email: email@address.com
+server_config: |
+  version: v2
+  teleport:
+    nodename: {{.ClusterName}}
+    data_dir: /var/lib/teleport
+    log:
+      output: stderr
+      severity: INFO
+      format:
+        output: text
+    ca_pin: ""
+    diag_addr: ""
+  auth_service:
+    {{if .LicenseFile}}license_file: {{.LicenseFile}}{{end}}
+    enabled: "yes"
+    listen_addr: 0.0.0.0:3025
+    cluster_name: {{.ClusterName}}
+    proxy_listener_mode: multiplex
+  ssh_service:
+    enabled: "yes"
+    commands:
+    - name: hostname
+      command: [hostname]
+      period: 1m0s
+  proxy_service:
+    enabled: "yes"
+    web_listen_addr: 0.0.0.0:443
+    public_addr: {{.ProxyFQDN}}:443
+    acme:
+      enabled: yes
+      email: {{.LetsEncryptEmail}}
+      uri: {{.LetsEncryptURI}}
+aws:
+  enabled: true
+  route53_domain: route53-domain.net
+  vpc_id: vpc-id
+builder:
+  build_type: enterprise
+provisioner:
+  teleport_tar_url: https://cdn.teleport.dev/teleport-v12.0.2-linux-amd64-bin.tar.gz
+nodes:
+  appNode:
+    roles:
+    - node
+    - app
+    config: |
+      version: v3
+      teleport:
+        proxy_server: {{.ProxyFQDN}}:443
+        join_params:
+          token_name: {{.InviteToken}}
+          method: token
+        ca_pin: {{.CAPin}}
+      auth_service:
+        enabled: no
+      proxy_service:
+        enabled: no
+      kubernetes_service:
+        enabled: no
+      ssh_service:
+        enabled: no
+      discovery_service:
+        enabled: no
+      app_service:
+          enabled: yes
+          apps:
+          - name: "demo-node-1"
+            uri: "http://127.0.0.1:9000"

@@ -1,0 +1,150 @@
+# This is a full config file with documentation for each field.
+
+# (optional) Storage directory for terraform state. If not supplied, ttest will use
+# the result of go's os.GetUserConfigDir().
+# store_dir: /path/to/storage
+
+# These keys are required for SSH access to the cluster.
+private_key_file: /path/to/private-key-file.pem
+public_key_file: /path/to/public-key-file.pem
+
+# If using Let's Encrypt, this e-mail will be supplied.
+lets_encrypt_email: email@address.com
+
+# A path to the license file if being used.
+license_file: /path/to/license-file
+
+# The server configuration. The following interpolated values are available:
+#
+# {{.ClusterName}}      | The name of the cluster
+# {{.ProxyFQDN}}        | The proxy's FQDN
+# {{.LetsEncryptEmail}} | The Let's Encrypt email to use
+# {{.LetsEncryptURI}}   | The Let's Encrypt URI to use
+# {{.LicenseFile}}      | The path to the license file on the remote machine
+# {{.InviteToken}}      | An invite token for a node (not available to the server)
+# {{.CAPin}}            | CA pin (not avaialble to the server)
+server_config: |
+  version: v2
+  teleport:
+    # The cluster name will be supplied from the configuration.
+    nodename: {{.ClusterName}}
+    data_dir: /var/lib/teleport
+    log:
+      output: stderr
+      severity: INFO
+      format:
+        output: text
+    ca_pin: ""
+    diag_addr: ""
+  auth_service:
+    # Supplying the license file.
+    {{if .LicenseFile}}license_file: {{.LicenseFile}}{{end}}
+    enabled: "yes"
+    listen_addr: 0.0.0.0:3025
+    cluster_name: {{.ClusterName}}
+    proxy_listener_mode: multiplex
+  ssh_service:
+    enabled: "yes"
+    commands:
+    - name: hostname
+      command: [hostname]
+      period: 1m0s
+  proxy_service:
+    enabled: "yes"
+    web_listen_addr: 0.0.0.0:443
+    # The proxy FQDN is supplied as well.
+    public_addr: {{.ProxyFQDN}}:443
+    acme:
+      enabled: yes
+      # In order to use Let's Encrypt, you'll need these blurbs.
+      email: {{.LetsEncryptEmail}}
+      uri: {{.LetsEncryptURI}}
+# AWS specific configs.
+aws:
+  enabled: true
+
+  # route53_domain is the subdomain that will be used for the cluster.
+  # It will be accessible via <cluster-name>.<route53_domain>
+  route53_domain: route53-domain.net
+
+  # vpc_id is the VPC to use for instance provisioning.
+  vpc_id: my-vpc-id
+# The builder will attempt to built Teleport from local source if possible. If the
+# Teleport URL is supplied to the provisioner, this will not be used.
+builder:
+  # Valid built types are:
+  # - OSS
+  # - enterprise
+  # - fips
+  build_type: enterprise
+# Provisioner configs.
+provisioner:
+  # Optional Teleport tarball. If supplied, this will be deployed to all of the nodes
+  # in the Teleport cluster.
+  teleport_tar_url: https://cdn.teleport.dev/teleport-v12.0.2-linux-amd64-bin.tar.gz
+# ttest will provision one node per configuration.
+nodes:
+  # The name of the node, which will map to a host in AWS.
+  appNode1:
+    # When creating the invite token for this node, these roles will be used to create it.
+    roles:
+    - node
+    - app
+    # The node configuration. The following interpolated values are available:
+    #
+    # {{.ClusterName}}      | The name of the cluster
+    # {{.ProxyFQDN}}        | The proxy's FQDN
+    # {{.LetsEncryptEmail}} | The Let's Encrypt email to use
+    # {{.LetsEncryptURI}}   | The Let's Encrypt URI to use
+    # {{.InviteToken}}      | An invite token for a node (not available to the server)
+    # {{.CAPin}}            | CA pin (not avaialble to the server)
+    config: |
+      version: v3
+      teleport:
+        proxy_server: {{.ProxyFQDN}}:443
+        join_params:
+          token_name: {{.InviteToken}}
+          method: token
+        ca_pin: {{.CAPin}}
+      auth_service:
+        enabled: no
+      proxy_service:
+        enabled: no
+      kubernetes_service:
+        enabled: no
+      ssh_service:
+        enabled: no
+      discovery_service:
+        enabled: no
+      app_service:
+          enabled: yes
+          apps:
+          - name: "demo-node-1"
+            uri: "http://127.0.0.1:9000"
+  appNode2:
+    roles:
+    - node
+    - app
+    config: |
+      version: v3
+      teleport:
+        proxy_server: {{.ProxyFQDN}}:443
+        join_params:
+          token_name: {{.InviteToken}}
+          method: token
+        ca_pin: {{.CAPin}}
+      auth_service:
+        enabled: no
+      proxy_service:
+        enabled: no
+      kubernetes_service:
+        enabled: no
+      ssh_service:
+        enabled: no
+      discovery_service:
+        enabled: no
+      app_service:
+          enabled: yes
+          apps:
+          - name: "demo-node-1"
+            uri: "http://127.0.0.1:9000"
