@@ -77,6 +77,10 @@ func main() {
 	nodesSshCmd.Arg("node-name", "The name of the node.").Required().StringVar(&nodeName)
 	nodesSshCmd.Arg("command", "An optional command for the node").StringsVar(&command)
 
+	tctlCmd := rootCmd.Command("tctl", "Runs an arbitrary tctl command against the cluster.")
+	tctlCmd.Arg("cluster-name", "The name of the cluster.").Required().StringVar(&clusterName)
+	tctlCmd.Arg("command", "An optional command for the node").StringsVar(&command)
+
 	storeCmd := rootCmd.Command("store", "Interacts with the ttest store.")
 
 	storeDirCmd := storeCmd.Command("dir", "Displays the store directory for the given cluster")
@@ -122,6 +126,14 @@ func main() {
 			}
 			log.Fatalf("error creating an SSH connection to node %s: %v", nodeName, err)
 		}
+	case tctlCmd.FullCommand():
+		if err := tctl(ctx, provisioner, command...); err != nil {
+			if exitError, ok := err.(*ssh.ExitError); ok {
+				os.Exit(exitError.ExitStatus())
+			}
+			log.Fatalf("error running tctl command%v", err)
+		}
+	case tctlCmd.FullCommand():
 	case storeDirCmd.FullCommand():
 		storeDir(cfg)
 	}
@@ -156,6 +168,10 @@ func nodesLs(ctx context.Context, provisioner *teleport.Provisioner) error {
 
 func nodesSsh(ctx context.Context, provisioner *teleport.Provisioner, nodeName string, command ...string) error {
 	return provisioner.SSH(ctx, nodeName, command...)
+}
+
+func tctl(ctx context.Context, provisioner *teleport.Provisioner, command ...string) error {
+	return provisioner.TCTL(ctx, command...)
 }
 
 func storeDir(cfg *config.Config) {

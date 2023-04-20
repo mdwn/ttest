@@ -238,6 +238,9 @@ type AWSConfig struct {
 
 	// VPCID is the VPC ID to set up AWS instances in.
 	VPCID string `yaml:"vpc_id"`
+
+	// The AMI to use.
+	AMI string `yaml:"ami"`
 }
 
 func (c *AWSConfig) checkAndSetDefaults() error {

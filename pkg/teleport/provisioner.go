@@ -206,6 +206,17 @@ func (p *Provisioner) SSH(ctx context.Context, nodeName string, command ...strin
 	return p.ssh.connectInteractive(ctx, node.Host)
 }
 
+// TCTL will allow an arbitrary tctl command on the cluster.
+func (p *Provisioner) TCTL(ctx context.Context, command ...string) error {
+	serverHost, err := p.provider.ServerHost(ctx)
+	if err != nil {
+		return trace.Wrap(err, "unable to find get server")
+	}
+
+	tctl := newTCTLClient(p.log, p.ssh, serverHost)
+	return tctl.runCommand(ctx, command)
+}
+
 // createInfrastructure will create the infrastructure.
 func (p *Provisioner) createInfrastructure(ctx context.Context) error {
 	p.log.Infof("Creating the infrastructure.")

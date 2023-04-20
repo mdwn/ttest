@@ -34,11 +34,6 @@ import (
 type Module string
 
 const (
-	// AWSKey is a module that will create a new AWS key pair.
-	AWSKey Module = "modules/aws/key"
-	// AWSCluster is a module that will create a new AWS Teleport cluster.
-	AWSCluster Module = "modules/aws/cluster"
-
 	// stateSubdir is the directory where all state will be stored. Will be in a subdirectory under the
 	// configured store directory.
 	stateSubdir = "state"

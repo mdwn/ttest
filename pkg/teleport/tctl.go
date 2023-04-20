@@ -60,6 +60,11 @@ func (t *tctlClient) waitForStart(ctx context.Context, ttl time.Duration) error 
 	}
 }
 
+func (t *tctlClient) runCommand(ctx context.Context, command []string) error {
+	fullCommand := append([]string{"sudo", "/opt/teleport/tctl"}, command...)
+	return t.ssh.runUserCommand(ctx, t.host, fullCommand)
+}
+
 // inviteToken creates an invite token.
 func (t *tctlClient) inviteToken(ctx context.Context, roles []string) (string, error) {
 	output, err := t.ssh.runCmd(ctx, t.host,
