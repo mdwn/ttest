@@ -1,0 +1,12 @@
+kind: role
+version: v5
+metadata:
+  name: visitor
+spec:
+  allow:
+    logins:
+      - visitor
+    # In case your Node is labeled, you will need to explicitly allow access
+    # to Nodes with labels in order to SSH into your Node.
+    node_labels:
+      '*': '*'

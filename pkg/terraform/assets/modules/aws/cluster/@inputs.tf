@@ -11,7 +11,6 @@ variable "vpc_id" {
 variable "ami_id" {
   type        = string
   description = "the AMI to use to provision up Teleport instances"
-  default     = "ami-0f01974d5fd3b4530" // Ubuntu 22.04
 }
 
 variable "node_count" {

@@ -58,23 +58,6 @@ func NewProvider(ctx context.Context, cfg *config.Config) (*Provider, error) {
 		return nil, trace.Wrap(err)
 	}
 
-	amiID := cfg.ClusterConfig.AWSConfig.AMI
-	if amiID == "" {
-		var output regionOutput
-		err := tfClient.Apply(ctx, awsRegion, regionState, &output)
-		if err != nil {
-			return nil, trace.Wrap(err, "AMI was not supplied and unable to find currently configured region")
-		}
-
-		var ok bool
-		amiID, ok = amiDefaults[output.Region]
-		if !ok {
-			return nil, trace.NotFound("unable to find default AMI for region %s", output.Region)
-		}
-
-		cfg.Log.Infof("Using default AMI %s for region %s", amiID, output.Region)
-	}
-
 	return &Provider{
 		log:           cfg.Log,
 		publicKey:     string(cfg.ClusterConfig.GetPublicKey()),
@@ -82,7 +65,7 @@ func NewProvider(ctx context.Context, cfg *config.Config) (*Provider, error) {
 		nodeCount:     len(cfg.ClusterConfig.NodeConfigs),
 		route53Domain: cfg.ClusterConfig.AWSConfig.Route53Domain,
 		vpcID:         cfg.ClusterConfig.AWSConfig.VPCID,
-		amiID:         amiID,
+		amiID:         cfg.ClusterConfig.AWSConfig.AMI,
 		tfClient:      tfClient,
 	}, nil
 }
@@ -95,12 +78,30 @@ func (p *Provider) Create(ctx context.Context) error {
 		return trace.Wrap(err)
 	}
 
+	amiID := p.amiID
+	if amiID == "" {
+		var output regionOutput
+		err := p.tfClient.Apply(ctx, awsRegion, regionState, &output)
+		if err != nil {
+			return trace.Wrap(err, "AMI was not supplied and unable to find currently configured region")
+		}
+
+		var ok bool
+		amiID, ok = amiDefaults[output.Region]
+		if !ok {
+			return trace.NotFound("unable to find default AMI for region %s", output.Region)
+		}
+
+		p.log.Infof("Using default AMI %s for region %s", amiID, output.Region)
+	}
+
 	err = p.tfClient.Apply(ctx, awsCluster, fmt.Sprintf(clusterStateFormat, p.clusterName), nil,
 		"route53_domain", p.route53Domain,
 		"vpc_id", p.vpcID,
 		"key_name", output.KeyName,
 		"cluster_name", p.clusterName,
-		"node_count", p.nodeCount)
+		"node_count", p.nodeCount,
+		"ami_id", amiID)
 	if err != nil {
 		return trace.Wrap(err)
 	}

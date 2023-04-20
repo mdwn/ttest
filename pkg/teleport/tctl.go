@@ -65,6 +65,13 @@ func (t *tctlClient) runCommand(ctx context.Context, command []string) error {
 	return t.ssh.runUserCommand(ctx, t.host, fullCommand)
 }
 
+// trustedClusterToken creates a trusted cluster token.
+func (t *tctlClient) trustedClusterToken(ctx context.Context) (string, error) {
+	output, err := t.ssh.runCmd(ctx, t.host,
+		`sudo /opt/teleport/tctl tokens add --type=trusted_cluster --ttl=5m | grep "invite token:" | grep -Eo "[0-9a-z]{32}"`)
+	return strings.TrimSpace(output), trace.Wrap(err)
+}
+
 // inviteToken creates an invite token.
 func (t *tctlClient) inviteToken(ctx context.Context, roles []string) (string, error) {
 	output, err := t.ssh.runCmd(ctx, t.host,
