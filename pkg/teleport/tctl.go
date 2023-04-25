@@ -54,34 +54,34 @@ func (t *tctlClient) waitForStart(ctx context.Context, ttl time.Duration) error 
 		case <-time.After(1 * time.Second):
 		}
 
-		if _, err := t.ssh.runCmd(ctx, t.host, "sudo /opt/teleport/tctl status"); err == nil {
+		if _, err := t.ssh.runCmd(ctx, t.host, "sudo -i tctl status"); err == nil {
 			return nil
 		}
 	}
 }
 
 func (t *tctlClient) runCommand(ctx context.Context, command []string) error {
-	fullCommand := append([]string{"sudo", "/opt/teleport/tctl"}, command...)
+	fullCommand := append([]string{"sudo", "-i", "tctl"}, command...)
 	return t.ssh.runUserCommand(ctx, t.host, fullCommand)
 }
 
 // trustedClusterToken creates a trusted cluster token.
 func (t *tctlClient) trustedClusterToken(ctx context.Context) (string, error) {
 	output, err := t.ssh.runCmd(ctx, t.host,
-		`sudo /opt/teleport/tctl tokens add --type=trusted_cluster --ttl=5m | grep "invite token:" | grep -Eo "[0-9a-z]{32}"`)
+		`sudo -i tctl tokens add --type=trusted_cluster --ttl=5m | grep "invite token:" | grep -Eo "[0-9a-z]{32}"`)
 	return strings.TrimSpace(output), trace.Wrap(err)
 }
 
 // inviteToken creates an invite token.
 func (t *tctlClient) inviteToken(ctx context.Context, roles []string) (string, error) {
 	output, err := t.ssh.runCmd(ctx, t.host,
-		fmt.Sprintf(`sudo /opt/teleport/tctl nodes add --ttl=5m --roles=%q | grep "invite token:" | grep -Eo "[0-9a-z]{32}"`,
+		fmt.Sprintf(`sudo -i tctl nodes add --ttl=5m --roles=%q | grep "invite token:" | grep -Eo "[0-9a-z]{32}"`,
 			strings.Join(roles, ",")))
 	return strings.TrimSpace(output), trace.Wrap(err)
 }
 
 // caPin will return the CA pin for the Teleport server.
 func (t *tctlClient) caPin(ctx context.Context) (string, error) {
-	output, err := t.ssh.runCmd(ctx, t.host, "sudo /opt/teleport/tctl status | awk '/CA pin/{print $3}'")
+	output, err := t.ssh.runCmd(ctx, t.host, "sudo -i tctl status | awk '/CA pin/{print $3}'")
 	return strings.TrimSpace(output), trace.Wrap(err)
 }

@@ -583,7 +583,7 @@ func (p *Provisioner) setupNodeConfig(ctx context.Context, host, proxyFQDN, invi
 
 // addTeleportToPath will add the Teleport binaries to the path.
 func (p *Provisioner) addTeleportToPath(ctx context.Context, host string) error {
-	_, err := p.ssh.runCmd(ctx, host, `echo 'export PATH="/opt/teleport:$PATH"' | sudo tee "/etc/profile.d/teleport-bin.sh"`)
+	_, err := p.ssh.runCmd(ctx, host, `echo 'export PATH="/opt/teleport-ent:/opt/teleport:$PATH"' | sudo tee "/etc/profile.d/teleport-bin.sh"`)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -610,7 +610,7 @@ func (p *Provisioner) setupService(ctx context.Context, host string) error {
 
 // setupSystemd will set up the Teleport systemd entry on the host.
 func (p *Provisioner) setupSystemd(ctx context.Context, host string) error {
-	_, err := p.ssh.runCmd(ctx, host, `sudo /opt/teleport/teleport install systemd | sudo tee /etc/systemd/system/teleport.service`)
+	_, err := p.ssh.runCmd(ctx, host, `sudo -i teleport install systemd | sudo tee /etc/systemd/system/teleport.service`)
 	return trace.Wrap(err)
 }
 
