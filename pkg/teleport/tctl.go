@@ -17,6 +17,7 @@ limitations under the License.
 package teleport
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -60,9 +61,25 @@ func (t *tctlClient) waitForStart(ctx context.Context, ttl time.Duration) error 
 	}
 }
 
+// runCommand runs the use provided tctl command.
 func (t *tctlClient) runCommand(ctx context.Context, command []string) error {
 	fullCommand := append([]string{"sudo", "-i", "tctl"}, command...)
 	return t.ssh.runUserCommand(ctx, t.host, fullCommand)
+}
+
+// create will force create the given file.
+func (t *tctlClient) create(ctx context.Context, fileContents string, force bool) error {
+	cmd := "sudo -i tctl create"
+	if force {
+		cmd += " -f"
+	}
+	buf := bytes.NewBufferString(fileContents)
+	output, err := t.ssh.runCmdWithStdin(ctx, t.host, cmd, buf)
+	if err != nil {
+		t.log.Errorf("Error creating object: %v, output: %s", err, output)
+	}
+
+	return nil
 }
 
 // trustedClusterToken creates a trusted cluster token.

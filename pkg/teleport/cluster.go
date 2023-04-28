@@ -19,6 +19,7 @@ package teleport
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"io"
 	"net/http"
 	"os"
@@ -45,6 +46,18 @@ const (
 	serverName                 = "server"
 )
 
+// trustedClusterTemplate is a template for creating trusted cluster objects on
+// leaf nodes.
+//
+//go:embed assets/trustedcluster.yaml.tpl
+var trustedClusterTemplate string
+
+// visitorRole is a role for setting up a visitor role on a leaf cluster. It's used
+// for setting up trusted clusters.
+//
+//go:embed assets/visitorrole.yaml
+var visitorRole string
+
 // configTemplate will be used when rendering Teleport YAML templates.
 type configTemplate struct {
 	ClusterName      string
@@ -59,8 +72,8 @@ type configTemplate struct {
 // provisionStep is an individual step for a provisioning operation.
 type provisionStep func(context.Context) error
 
-// Provisioner will install, set up, and configure Teleport on a host.
-type Provisioner struct {
+// Cluster will install, set up, and configure Teleport on a host.
+type Cluster struct {
 	log            *logrus.Logger
 	user           string
 	clusterName    string
@@ -76,8 +89,8 @@ type Provisioner struct {
 	nodeConfigs  map[string]config.NodeRolesAndConfig
 }
 
-// NewProvisioner creates a new Teleport provisioner.
-func NewProvisioner(ctx context.Context, cfg *config.Config) (*Provisioner, error) {
+// NewCluster creates a new Teleport cluster that can provision and interact with the cluster.
+func NewCluster(ctx context.Context, cfg *config.Config) (*Cluster, error) {
 	provider, err := provider.Get(ctx, cfg)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -88,7 +101,7 @@ func NewProvisioner(ctx context.Context, cfg *config.Config) (*Provisioner, erro
 		return nil, trace.Wrap(err)
 	}
 
-	return &Provisioner{
+	return &Cluster{
 		log:            cfg.Log,
 		user:           cfg.ClusterConfig.ProvisionerConfig.User,
 		clusterName:    cfg.ClusterName,
@@ -105,31 +118,31 @@ func NewProvisioner(ctx context.Context, cfg *config.Config) (*Provisioner, erro
 }
 
 // Create will create infrastructure and install and configure Teleport on the nodes.
-func (p *Provisioner) Create(ctx context.Context) error {
-	return trace.Wrap(p.runSteps(
+func (c *Cluster) Create(ctx context.Context) error {
+	return trace.Wrap(c.runSteps(
 		ctx,
-		p.createInfrastructure,
-		p.waitForSSHConnections,
-		p.deployBinaries,
-		p.configureAndStart,
+		c.createInfrastructure,
+		c.waitForSSHConnections,
+		c.deployBinaries,
+		c.configureAndStart,
 	))
 }
 
 // Deploy will install and configure Teleport on the nodes.
-func (p *Provisioner) Deploy(ctx context.Context) error {
-	return trace.Wrap(p.runSteps(
+func (c *Cluster) Deploy(ctx context.Context) error {
+	return trace.Wrap(c.runSteps(
 		ctx,
-		p.waitForSSHConnections,
-		p.deployBinaries,
-		p.configureAndStart,
+		c.waitForSSHConnections,
+		c.deployBinaries,
+		c.configureAndStart,
 	))
 }
 
 // Destroy will destroy the underlying infrastructure.
-func (p *Provisioner) Destroy(ctx context.Context) error {
-	return trace.Wrap(p.runSteps(
+func (c *Cluster) Destroy(ctx context.Context) error {
+	return trace.Wrap(c.runSteps(
 		ctx,
-		p.destroyInfrastructure,
+		c.destroyInfrastructure,
 	))
 }
 
@@ -141,13 +154,13 @@ type NodeInfo struct {
 }
 
 // Nodes will create a mapping of names to hosts.
-func (p *Provisioner) Nodes(ctx context.Context) (map[string]NodeInfo, error) {
-	serverHost, err := p.provider.ServerHost(ctx)
+func (c *Cluster) Nodes(ctx context.Context) (map[string]NodeInfo, error) {
+	serverHost, err := c.provider.ServerHost(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	nodes, err := p.provider.Nodes(ctx)
+	nodes, err := c.provider.Nodes(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -157,13 +170,13 @@ func (p *Provisioner) Nodes(ctx context.Context) (map[string]NodeInfo, error) {
 	nodeMap := map[string]NodeInfo{
 		serverName: {
 			Host:   serverHost,
-			Config: p.serverConfig,
+			Config: c.serverConfig,
 		},
 	}
 
 	// Sort the list of node names. These will correspond to each node returned from the provider.
 	nodeNames := make([]string, 0, numNodes)
-	for name := range p.nodeConfigs {
+	for name := range c.nodeConfigs {
 		nodeNames = append(nodeNames, name)
 	}
 	sort.Strings(nodeNames)
@@ -175,8 +188,8 @@ func (p *Provisioner) Nodes(ctx context.Context) (map[string]NodeInfo, error) {
 		}
 		nodeMap[nodeName] = NodeInfo{
 			Host:   host,
-			Roles:  p.nodeConfigs[nodeName].Roles,
-			Config: p.nodeConfigs[nodeName].Config,
+			Roles:  c.nodeConfigs[nodeName].Roles,
+			Config: c.nodeConfigs[nodeName].Config,
 		}
 	}
 
@@ -184,8 +197,8 @@ func (p *Provisioner) Nodes(ctx context.Context) (map[string]NodeInfo, error) {
 }
 
 // SSH will allow an interactive SSH session to a node.
-func (p *Provisioner) SSH(ctx context.Context, nodeName string, command ...string) error {
-	nodes, err := p.Nodes(ctx)
+func (c *Cluster) SSH(ctx context.Context, nodeName string, command ...string) error {
+	nodes, err := c.Nodes(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -200,39 +213,97 @@ func (p *Provisioner) SSH(ctx context.Context, nodeName string, command ...strin
 	}
 
 	if len(command) > 0 {
-		return p.ssh.runUserCommand(ctx, node.Host, command)
+		return c.ssh.runUserCommand(ctx, node.Host, command)
 	}
 
-	return p.ssh.connectInteractive(ctx, node.Host)
+	return c.ssh.connectInteractive(ctx, node.Host)
 }
 
 // TCTL will allow an arbitrary tctl command on the cluster.
-func (p *Provisioner) TCTL(ctx context.Context, command ...string) error {
-	serverHost, err := p.provider.ServerHost(ctx)
+func (c *Cluster) TCTL(ctx context.Context, command ...string) error {
+	serverHost, err := c.provider.ServerHost(ctx)
 	if err != nil {
-		return trace.Wrap(err, "unable to find get server")
+		return trace.Wrap(err, "unable to get server")
 	}
 
-	tctl := newTCTLClient(p.log, p.ssh, serverHost)
+	tctl := newTCTLClient(c.log, c.ssh, serverHost)
 	return tctl.runCommand(ctx, command)
 }
 
-// createInfrastructure will create the infrastructure.
-func (p *Provisioner) createInfrastructure(ctx context.Context) error {
-	p.log.Infof("Creating the infrastructure.")
-	return trace.Wrap(p.provider.Create(ctx))
-}
+// Trust will set up a trust relationship with the given provisioner.
+func (c *Cluster) Trust(ctx context.Context, root *Cluster) error {
+	leafServerHost, err := c.provider.ServerHost(ctx)
+	if err != nil {
+		return trace.Wrap(err, "unable to get leaf server host")
+	}
 
-// waitForSSHConnections will wait for all SSH connections.
-func (p *Provisioner) waitForSSHConnections(ctx context.Context) error {
-	p.log.Infof("Waiting for SSH connections to start.")
+	rootServerHost, err := root.provider.ServerHost(ctx)
+	if err != nil {
+		return trace.Wrap(err, "unable to get root server host")
+	}
+	rootProxyFQDN, err := root.provider.ProxyFQDN(ctx)
+	if err != nil {
+		return trace.Wrap(err, "unable to get root proxy FQDN")
+	}
 
-	serverHost, err := p.provider.ServerHost(ctx)
+	c.log.Infof("Creating visitor role on leaf cluster %s", c.clusterName)
+	leafTCTL := newTCTLClient(c.log, c.ssh, leafServerHost)
+	if err := leafTCTL.create(ctx, visitorRole, true); err != nil {
+		return trace.Wrap(err)
+	}
+
+	c.log.Infof("Creating trusted cluster token on cluster %s", root.clusterName)
+	rootTCTL := newTCTLClient(root.log, root.ssh, rootServerHost)
+	trustedToken, err := rootTCTL.trustedClusterToken(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	nodes, err := p.provider.Nodes(ctx)
+	template, err := template.New("trusted-cluster-template").Parse(trustedClusterTemplate)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	trustedCluster := bytes.NewBuffer(nil)
+	err = template.Execute(trustedCluster, struct {
+		RootClusterName     string
+		TrustedClusterToken string
+		RootProxyFQDN       string
+	}{
+		RootClusterName:     root.clusterName,
+		TrustedClusterToken: trustedToken,
+		RootProxyFQDN:       rootProxyFQDN,
+	})
+	if err != nil {
+		return trace.Wrap(err, "unable to create trusted cluster object")
+	}
+
+	c.log.Infof("Creating trusted cluster object on leaf cluster %s", c.clusterName)
+	if err := leafTCTL.create(ctx, trustedCluster.String(), false); err != nil {
+		return trace.Wrap(err, "error creating trusted cluster in leaf")
+	}
+
+	c.log.Infof("Trust relationship established!")
+
+	return nil
+}
+
+// createInfrastructure will create the infrastructure.
+func (c *Cluster) createInfrastructure(ctx context.Context) error {
+	c.log.Infof("Creating the infrastructure.")
+	return trace.Wrap(c.provider.Create(ctx))
+}
+
+// waitForSSHConnections will wait for all SSH connections.
+func (c *Cluster) waitForSSHConnections(ctx context.Context) error {
+	c.log.Infof("Waiting for SSH connections to start.")
+
+	serverHost, err := c.provider.ServerHost(ctx)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	nodes, err := c.provider.Nodes(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -249,7 +320,7 @@ func (p *Provisioner) waitForSSHConnections(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- p.ssh.waitForSSHConnection(sshTimeoutCtx, hostCopy)
+			errs <- c.ssh.waitForSSHConnection(sshTimeoutCtx, hostCopy)
 		}()
 	}
 
@@ -260,30 +331,30 @@ func (p *Provisioner) waitForSSHConnections(ctx context.Context) error {
 }
 
 // deployBinaries will deploy Teleport binaries to the nodes.
-func (p *Provisioner) deployBinaries(ctx context.Context) error {
-	p.log.Infof("Deploying Teleport.")
+func (c *Cluster) deployBinaries(ctx context.Context) error {
+	c.log.Infof("Deploying Teleport.")
 
 	var binaries []string
 	var teleportTarFile string
 	var err error
-	if p.teleportTarURL == "" {
-		binaries, err = p.builder.Build()
+	if c.teleportTarURL == "" {
+		binaries, err = c.builder.Build()
 		if err != nil {
 			return trace.Wrap(err)
 		}
 	} else {
-		teleportTarFile, err = p.downloadFileToCache(ctx, p.teleportTarURL)
+		teleportTarFile, err = c.downloadFileToCache(ctx, c.teleportTarURL)
 		if err != nil {
 			return trace.Wrap(err)
 		}
 	}
 
-	serverHost, err := p.provider.ServerHost(ctx)
+	serverHost, err := c.provider.ServerHost(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	nodes, err := p.provider.Nodes(ctx)
+	nodes, err := c.provider.Nodes(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -292,27 +363,27 @@ func (p *Provisioner) deployBinaries(ctx context.Context) error {
 
 	// Copy binaries to all hosts.
 	for _, host := range allHosts {
-		p.log.Infof("Copying Teleport binaries to %s", host)
+		c.log.Infof("Copying Teleport binaries to %s", host)
 		// Stop the Teleport service if it exists.
-		if err := p.stopService(ctx, host); err != nil {
+		if err := c.stopService(ctx, host); err != nil {
 			return trace.Wrap(err, "error stopping Teleport service on %s", host)
 		}
 
 		if teleportTarFile == "" {
 			// Copy the built binaries to the host.
-			err = p.copyTeleportBinariesToHost(ctx, host, binaries...)
+			err = c.copyTeleportBinariesToHost(ctx, host, binaries...)
 			if err != nil {
 				return trace.Wrap(err, "error copying Teleport binaries to %s", host)
 			}
 		} else {
 			// Copy the downloaded binaries to the host.
-			if err := p.ssh.extractTarballOnHost(ctx, host, "/opt", teleportTarFile); err != nil {
+			if err := c.ssh.extractTarballOnHost(ctx, host, "/opt", teleportTarFile); err != nil {
 				return trace.Wrap(err, "error extracting Teleport binaries on %s", host)
 			}
 		}
 
 		// Make sure Teleport binaries are on path.
-		err = p.addTeleportToPath(ctx, host)
+		err = c.addTeleportToPath(ctx, host)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -322,31 +393,31 @@ func (p *Provisioner) deployBinaries(ctx context.Context) error {
 }
 
 // configureAndStart will configure the nodes and start the services.
-func (p *Provisioner) configureAndStart(ctx context.Context) error {
-	p.log.Infof("Configuring and starting Teleport.")
-	serverHost, err := p.provider.ServerHost(ctx)
+func (c *Cluster) configureAndStart(ctx context.Context) error {
+	c.log.Infof("Configuring and starting Teleport.")
+	serverHost, err := c.provider.ServerHost(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	proxyFQDN, err := p.provider.ProxyFQDN(ctx)
+	proxyFQDN, err := c.provider.ProxyFQDN(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
 	serverSetupCtx, cancel := context.WithTimeout(ctx, nodeSetupTimeout)
 	// Set up the server.
-	err = p.setupServerConfig(serverSetupCtx, serverHost, proxyFQDN, p.license)
+	err = c.setupServerConfig(serverSetupCtx, serverHost, proxyFQDN, c.license)
 	if err != nil {
 		return trace.Wrap(err, "error setting up server config")
 	}
 
-	err = p.setupService(serverSetupCtx, serverHost)
+	err = c.setupService(serverSetupCtx, serverHost)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	tctl := newTCTLClient(p.log, p.ssh, serverHost)
+	tctl := newTCTLClient(c.log, c.ssh, serverHost)
 
 	if err := tctl.waitForStart(serverSetupCtx, ttlUntilTeleportStarts); err != nil {
 		return trace.Wrap(err, "timeout waiting for Teleport service to start on server")
@@ -356,7 +427,7 @@ func (p *Provisioner) configureAndStart(ctx context.Context) error {
 	cancel()
 
 	// Get the nodes from the provider.
-	nodes, err := p.provider.Nodes(ctx)
+	nodes, err := c.provider.Nodes(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -367,12 +438,12 @@ func (p *Provisioner) configureAndStart(ctx context.Context) error {
 		return trace.Wrap(err)
 	}
 
-	numNodes := len(p.nodeConfigs)
+	numNodes := len(c.nodeConfigs)
 	if numNodes != len(nodes) {
 		return trace.BadParameter("number of nodes from provider (%d) does not match the provided node configs (%d)", len(nodes), numNodes)
 	}
 
-	nodeConfigs, err := p.Nodes(ctx)
+	nodeConfigs, err := c.Nodes(ctx)
 	if err != nil {
 		return trace.Wrap(err, "error getting nodes mapped to their configs")
 	}
@@ -382,7 +453,7 @@ func (p *Provisioner) configureAndStart(ctx context.Context) error {
 
 	nodeStarted := make(chan struct{})
 	for nn, i := range nodeConfigs {
-		// Skip the server as it has already been setup.
+		// Skip the server as it has already been setuc.
 		if nn == serverName {
 			continue
 		}
@@ -391,24 +462,24 @@ func (p *Provisioner) configureAndStart(ctx context.Context) error {
 		go func() {
 			defer func() { nodeStarted <- struct{}{} }()
 
-			p.log.Infof("Setting up config for node %s with roles %s", nodeName, strings.Join(nodeInfo.Roles, ","))
+			c.log.Infof("Setting up config for node %s with roles %s", nodeName, strings.Join(nodeInfo.Roles, ","))
 			inviteToken, err := tctl.inviteToken(nodeSetupCtx, nodeInfo.Roles)
 			if err != nil {
 				errs <- trace.Wrap(err, "error getting invite token for node %s", nodeName)
 				return
 			}
 
-			if err := p.setupNodeConfig(nodeSetupCtx, nodeInfo.Host, proxyFQDN, inviteToken, caPin, nodeInfo.Config); err != nil {
+			if err := c.setupNodeConfig(nodeSetupCtx, nodeInfo.Host, proxyFQDN, inviteToken, caPin, nodeInfo.Config); err != nil {
 				errs <- trace.Wrap(err, "error setting up node config for node %s", nodeName)
 				return
 			}
 
-			err = p.setupService(nodeSetupCtx, nodeInfo.Host)
+			err = c.setupService(nodeSetupCtx, nodeInfo.Host)
 			if err != nil {
 				errs <- trace.Wrap(err, "error setting up service for node %s", nodeName)
 				return
 			}
-			p.log.Infof("Successfully setup node config for %s", nodeName)
+			c.log.Infof("Successfully setup node config for %s", nodeName)
 		}()
 	}
 
@@ -428,13 +499,13 @@ func (p *Provisioner) configureAndStart(ctx context.Context) error {
 }
 
 // destroyInfrastructure will destroy the infrastructure.
-func (p *Provisioner) destroyInfrastructure(ctx context.Context) error {
-	p.log.Infof("Destroying the infrastructure.")
-	return trace.Wrap(p.provider.Destroy(ctx))
+func (c *Cluster) destroyInfrastructure(ctx context.Context) error {
+	c.log.Infof("Destroying the infrastructure.")
+	return trace.Wrap(c.provider.Destroy(ctx))
 }
 
 // runSteps will run the individual steps.
-func (p *Provisioner) runSteps(ctx context.Context, steps ...provisionStep) error {
+func (c *Cluster) runSteps(ctx context.Context, steps ...provisionStep) error {
 	for _, stepFn := range steps {
 		if err := stepFn(ctx); err != nil {
 			return trace.Wrap(err)
@@ -444,13 +515,13 @@ func (p *Provisioner) runSteps(ctx context.Context, steps ...provisionStep) erro
 }
 
 // copyTeleportBinariesToHost will copy the given files to the host.
-func (p *Provisioner) copyTeleportBinariesToHost(ctx context.Context, host string, files ...string) error {
-	return p.ssh.copyFilesToHost(ctx, host, "/opt/teleport", files...)
+func (c *Cluster) copyTeleportBinariesToHost(ctx context.Context, host string, files ...string) error {
+	return c.ssh.copyFilesToHost(ctx, host, "/opt/teleport", files...)
 }
 
 // stopService will stop the Teleport service if it's running.
-func (p *Provisioner) stopService(ctx context.Context, host string) error {
-	_, err := p.ssh.runCmd(ctx, host, `sudo systemctl stop teleport`)
+func (c *Cluster) stopService(ctx context.Context, host string) error {
+	_, err := c.ssh.runCmd(ctx, host, `sudo systemctl stop teleport`)
 
 	// Ignore an exit error, as the service may not yet exist.
 	if _, ok := trace.Unwrap(err).(*ssh.ExitError); err != nil && !ok {
@@ -460,17 +531,17 @@ func (p *Provisioner) stopService(ctx context.Context, host string) error {
 }
 
 // downloadFileToCache will download the file to the download cache and return its location.
-func (p *Provisioner) downloadFileToCache(ctx context.Context, url string) (string, error) {
-	filename := path.Base(p.teleportTarURL)
-	destination := path.Join(p.downloadCache, filename)
+func (c *Cluster) downloadFileToCache(ctx context.Context, url string) (string, error) {
+	filename := path.Base(c.teleportTarURL)
+	destination := path.Join(c.downloadCache, filename)
 
 	// Only download the file if we need to.
 	if _, err := os.Stat(destination); err == nil {
-		p.log.Infof("%s already in the cache, skipping download", filename)
+		c.log.Infof("%s already in the cache, skipping download", filename)
 		return destination, nil
 	}
 
-	p.log.Infof("Downloading %s", url)
+	c.log.Infof("Downloading %s", url)
 
 	// Make sure the destination directory exists
 	if err := os.MkdirAll(path.Dir(destination), 0o755); err != nil {
@@ -483,7 +554,7 @@ func (p *Provisioner) downloadFileToCache(ctx context.Context, url string) (stri
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			p.log.Errorf("error closing destination file: %v", err)
+			c.log.Errorf("error closing destination file: %v", err)
 		}
 	}()
 
@@ -497,13 +568,13 @@ func (p *Provisioner) downloadFileToCache(ctx context.Context, url string) (stri
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			p.log.Errorf("error closing response body: %v", err)
+			c.log.Errorf("error closing response body: %v", err)
 		}
 	}()
 
 	_, copyErr := io.Copy(file, resp.Body)
 	if copyErr != nil {
-		p.log.Infof("Download failed, removing the file from the download cache")
+		c.log.Infof("Download failed, removing the file from the download cache")
 		if err := os.Remove(destination); err != nil {
 			return "", trace.NewAggregate(copyErr, err)
 		}
@@ -513,22 +584,22 @@ func (p *Provisioner) downloadFileToCache(ctx context.Context, url string) (stri
 }
 
 // setupServerConfig will install the config on the server.
-func (p *Provisioner) setupServerConfig(ctx context.Context, host, proxyFQDN string, license []byte) error {
+func (c *Cluster) setupServerConfig(ctx context.Context, host, proxyFQDN string, license []byte) error {
 	var licenseFile string
-	if len(p.license) > 0 {
+	if len(c.license) > 0 {
 		licenseFile = "/etc/teleport-license.pem"
 	}
 	buf := bytes.NewBuffer([]byte{})
 
-	serverConf, err := template.New("serverConfig").Parse(p.serverConfig)
+	serverConf, err := template.New("serverConfig").Parse(c.serverConfig)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
 	err = serverConf.Execute(buf, configTemplate{
-		ClusterName:      p.clusterName,
+		ClusterName:      c.clusterName,
 		ProxyFQDN:        proxyFQDN,
-		LetsEncryptEmail: p.leEmail,
+		LetsEncryptEmail: c.leEmail,
 		LetsEncryptURI:   letsEncryptURI,
 		LicenseFile:      licenseFile,
 	})
@@ -536,7 +607,7 @@ func (p *Provisioner) setupServerConfig(ctx context.Context, host, proxyFQDN str
 		return trace.Wrap(err)
 	}
 
-	err = p.ssh.createFile(ctx, host, "/etc/teleport.yaml", buf)
+	err = c.ssh.createFile(ctx, host, "/etc/teleport.yaml", buf)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -544,7 +615,7 @@ func (p *Provisioner) setupServerConfig(ctx context.Context, host, proxyFQDN str
 	if licenseFile != "" {
 		buf = bytes.NewBuffer(license)
 
-		err = p.ssh.createFile(ctx, host, "/etc/teleport-license.pem", buf)
+		err = c.ssh.createFile(ctx, host, "/etc/teleport-license.pem", buf)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -554,7 +625,7 @@ func (p *Provisioner) setupServerConfig(ctx context.Context, host, proxyFQDN str
 }
 
 // setupNodeConfig will install the config on the given node.
-func (p *Provisioner) setupNodeConfig(ctx context.Context, host, proxyFQDN, inviteToken, caPin, nodeConfig string) error {
+func (c *Cluster) setupNodeConfig(ctx context.Context, host, proxyFQDN, inviteToken, caPin, nodeConfig string) error {
 	buf := bytes.NewBuffer([]byte{})
 	nodeConf, err := template.New("nodeConfig").Parse(nodeConfig)
 	if err != nil {
@@ -562,9 +633,9 @@ func (p *Provisioner) setupNodeConfig(ctx context.Context, host, proxyFQDN, invi
 	}
 
 	err = nodeConf.Execute(buf, configTemplate{
-		ClusterName:      p.clusterName,
+		ClusterName:      c.clusterName,
 		ProxyFQDN:        proxyFQDN,
-		LetsEncryptEmail: p.leEmail,
+		LetsEncryptEmail: c.leEmail,
 		LetsEncryptURI:   letsEncryptURI,
 		InviteToken:      inviteToken,
 		CAPin:            caPin,
@@ -573,7 +644,7 @@ func (p *Provisioner) setupNodeConfig(ctx context.Context, host, proxyFQDN, invi
 		return trace.Wrap(err)
 	}
 
-	err = p.ssh.createFile(ctx, host, "/etc/teleport.yaml", buf)
+	err = c.ssh.createFile(ctx, host, "/etc/teleport.yaml", buf)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -582,40 +653,40 @@ func (p *Provisioner) setupNodeConfig(ctx context.Context, host, proxyFQDN, invi
 }
 
 // addTeleportToPath will add the Teleport binaries to the path.
-func (p *Provisioner) addTeleportToPath(ctx context.Context, host string) error {
-	_, err := p.ssh.runCmd(ctx, host, `echo 'export PATH="/opt/teleport-ent:/opt/teleport:$PATH"' | sudo tee "/etc/profile.d/teleport-bin.sh"`)
+func (c *Cluster) addTeleportToPath(ctx context.Context, host string) error {
+	_, err := c.ssh.runCmd(ctx, host, `echo 'export PATH="/opt/teleport-ent:/opt/teleport:$PATH"' | sudo tee "/etc/profile.d/teleport-bin.sh"`)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	p.log.Infof("Teleport has been added to the path on host %s", host)
+	c.log.Infof("Teleport has been added to the path on host %s", host)
 
 	return nil
 }
 
 // setupService will set up and start the Teleport systemd service.
-func (p *Provisioner) setupService(ctx context.Context, host string) error {
-	if err := p.setupSystemd(ctx, host); err != nil {
+func (c *Cluster) setupService(ctx context.Context, host string) error {
+	if err := c.setupSystemd(ctx, host); err != nil {
 		return trace.Wrap(err)
 	}
 
-	if err := p.enableAndStart(ctx, host); err != nil {
+	if err := c.enableAndStart(ctx, host); err != nil {
 		return trace.Wrap(err)
 	}
 
-	p.log.Infof("Teleport has been enabled in systemd and started on %s", host)
+	c.log.Infof("Teleport has been enabled in systemd and started on %s", host)
 
 	return nil
 }
 
 // setupSystemd will set up the Teleport systemd entry on the host.
-func (p *Provisioner) setupSystemd(ctx context.Context, host string) error {
-	_, err := p.ssh.runCmd(ctx, host, `sudo -i teleport install systemd | sudo tee /etc/systemd/system/teleport.service`)
+func (c *Cluster) setupSystemd(ctx context.Context, host string) error {
+	_, err := c.ssh.runCmd(ctx, host, `sudo -i teleport install systemd | sudo tee /etc/systemd/system/teleport.service`)
 	return trace.Wrap(err)
 }
 
 // enableAndStart will enable the Teleport service on the host.
-func (p *Provisioner) enableAndStart(ctx context.Context, host string) error {
-	_, err := p.ssh.runCmd(ctx, host, `sudo systemctl enable teleport && sudo systemctl start teleport`)
+func (c *Cluster) enableAndStart(ctx context.Context, host string) error {
+	_, err := c.ssh.runCmd(ctx, host, `sudo systemctl enable teleport && sudo systemctl start teleport`)
 	return trace.Wrap(err)
 }

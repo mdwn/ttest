@@ -167,6 +167,23 @@ func (s *sshClient) runCmd(ctx context.Context, host, cmd string) (string, error
 	return string(output), err
 }
 
+// runCmdWithStdin will run the given command with the given stdin.
+func (s *sshClient) runCmdWithStdin(ctx context.Context, host, cmd string, stdin io.Reader) (string, error) {
+	session, closer, err := s.createSession(ctx, host)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	defer closer()
+
+	session.Stdin = stdin
+	output, err := session.CombinedOutput(cmd)
+	if err != nil {
+		return "", trace.Wrap(err, string(output))
+	}
+
+	return string(output), err
+}
+
 // copyFilesToHost will copy the given local files to the host.
 func (s *sshClient) copyFilesToHost(ctx context.Context, host, destination string, files ...string) error {
 	session, closer, err := s.createSession(ctx, host)
@@ -357,16 +374,22 @@ func (s *sshClient) createSession(ctx context.Context, host string) (*ssh.Sessio
 			}
 		}
 
-		if err := client.Close(); err != nil {
-			s.log.Debugf("error closing the SSH client: %v", err)
+		if client != nil {
+			if err := client.Close(); err != nil {
+				s.log.Debugf("error closing the SSH client: %v", err)
+			}
 		}
 
-		if err := conn.Close(); err != nil {
-			s.log.Debugf("error closing the connection: %v", err)
+		if conn != nil {
+			if err := conn.Close(); err != nil {
+				s.log.Debugf("error closing the connection: %v", err)
+			}
 		}
 
-		if err := agentConn.Close(); err != nil {
-			s.log.Debugf("error closing the agent connection: %v", err)
+		if agentConn != nil {
+			if err := agentConn.Close(); err != nil {
+				s.log.Debugf("error closing the agent connection: %v", err)
+			}
 		}
 	}
 

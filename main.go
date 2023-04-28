@@ -52,7 +52,7 @@ func main() {
 		}
 	}
 
-	var configDir, clusterName, nodeName string
+	var configDir, clusterName, rootClusterName, nodeName string
 	var command []string
 
 	rootCmd := kingpin.New("teleport-deploy", "A utility to deploy and establish a Teleport cluster.")
@@ -66,6 +66,10 @@ func main() {
 
 	destroyCmd := rootCmd.Command("destroy", "Destroys a Teleport cluster.")
 	destroyCmd.Arg("cluster-name", "The name of the cluster.").Required().StringVar(&clusterName)
+
+	trustCmd := rootCmd.Command("trust", "Will trust the given root cluster.")
+	trustCmd.Arg("cluster-name", "The name of the leaf cluster..").Required().StringVar(&clusterName)
+	trustCmd.Arg("root-cluster-name", "The name of the root cluster.").Required().StringVar(&rootClusterName)
 
 	nodesCmd := rootCmd.Command("nodes", "Interacts with the nodes on a Teleport cluster.")
 
@@ -91,43 +95,46 @@ func main() {
 		log.Fatalf("error parsing command line: %v", err)
 	}
 
-	configFileDir := path.Join(configDir, clusterName+".yaml")
-	cfg, err := config.New(log, clusterName, configFileDir)
+	cluster, err := createCluster(ctx, configDir, clusterName)
 	if err != nil {
-		log.Fatalf("error during configuration: %v", err)
-	}
-
-	provisioner, err := teleport.NewProvisioner(ctx, cfg)
-	if err != nil {
-		log.Fatalf("error during provisioner creation: %v", err)
+		log.Fatalf("error configuring cluster object: %v", err)
 	}
 
 	switch parseResult {
 	case createCmd.FullCommand():
-		if err := create(ctx, provisioner); err != nil {
+		if err := create(ctx, cluster); err != nil {
 			log.Fatalf("error creating cluster: %v", err)
 		}
 	case deployCmd.FullCommand():
-		if err := deploy(ctx, provisioner); err != nil {
+		if err := deploy(ctx, cluster); err != nil {
 			log.Fatalf("error deploying to cluster: %v", err)
 		}
 	case destroyCmd.FullCommand():
-		if err := destroy(ctx, provisioner); err != nil {
+		if err := destroy(ctx, cluster); err != nil {
 			log.Fatalf("error destroying cluster: %v", err)
 		}
+	case trustCmd.FullCommand():
+		rootCluster, err := createCluster(ctx, configDir, rootClusterName)
+		if err != nil {
+			log.Fatalf("error configuring root cluster objectl: %v", err)
+		}
+
+		if err := cluster.Trust(ctx, rootCluster); err != nil {
+			log.Fatalf("error trusting cluster: %v", err)
+		}
 	case nodesLsCmd.FullCommand():
-		if err := nodesLs(ctx, provisioner); err != nil {
+		if err := nodesLs(ctx, cluster); err != nil {
 			log.Fatalf("error listing nodes: %v", err)
 		}
 	case nodesSshCmd.FullCommand():
-		if err := nodesSsh(ctx, provisioner, nodeName, command...); err != nil {
+		if err := nodesSsh(ctx, cluster, nodeName, command...); err != nil {
 			if exitError, ok := err.(*ssh.ExitError); ok {
 				os.Exit(exitError.ExitStatus())
 			}
 			log.Fatalf("error creating an SSH connection to node %s: %v", nodeName, err)
 		}
 	case tctlCmd.FullCommand():
-		if err := tctl(ctx, provisioner, command...); err != nil {
+		if err := tctl(ctx, cluster, command...); err != nil {
 			if exitError, ok := err.(*ssh.ExitError); ok {
 				os.Exit(exitError.ExitStatus())
 			}
@@ -135,24 +142,24 @@ func main() {
 		}
 	case tctlCmd.FullCommand():
 	case storeDirCmd.FullCommand():
-		storeDir(cfg)
+		storeDir(configDir, clusterName)
 	}
 }
 
-func create(ctx context.Context, provisioner *teleport.Provisioner) error {
-	return trace.Wrap(provisioner.Create(ctx))
+func create(ctx context.Context, cluster *teleport.Cluster) error {
+	return trace.Wrap(cluster.Create(ctx))
 }
 
-func deploy(ctx context.Context, provisioner *teleport.Provisioner) error {
-	return trace.Wrap(provisioner.Deploy(ctx))
+func deploy(ctx context.Context, cluster *teleport.Cluster) error {
+	return trace.Wrap(cluster.Deploy(ctx))
 }
 
-func destroy(ctx context.Context, provisioner *teleport.Provisioner) error {
-	return trace.Wrap(provisioner.Destroy(ctx))
+func destroy(ctx context.Context, cluster *teleport.Cluster) error {
+	return trace.Wrap(cluster.Destroy(ctx))
 }
 
-func nodesLs(ctx context.Context, provisioner *teleport.Provisioner) error {
-	nodes, err := provisioner.Nodes(ctx)
+func nodesLs(ctx context.Context, cluster *teleport.Cluster) error {
+	nodes, err := cluster.Nodes(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -166,14 +173,30 @@ func nodesLs(ctx context.Context, provisioner *teleport.Provisioner) error {
 	return nil
 }
 
-func nodesSsh(ctx context.Context, provisioner *teleport.Provisioner, nodeName string, command ...string) error {
-	return provisioner.SSH(ctx, nodeName, command...)
+func nodesSsh(ctx context.Context, cluster *teleport.Cluster, nodeName string, command ...string) error {
+	return cluster.SSH(ctx, nodeName, command...)
 }
 
-func tctl(ctx context.Context, provisioner *teleport.Provisioner, command ...string) error {
-	return provisioner.TCTL(ctx, command...)
+func tctl(ctx context.Context, cluster *teleport.Cluster, command ...string) error {
+	return cluster.TCTL(ctx, command...)
 }
 
-func storeDir(cfg *config.Config) {
+func storeDir(configFileDir, clusterName string) error {
+	cfg, err := config.New(log, clusterName, configFileDir)
+	if err != nil {
+		return trace.Wrap(err)
+	}
 	fmt.Println(cfg.ClusterConfig.StoreDir)
+
+	return nil
+}
+
+func createCluster(ctx context.Context, configDir, clusterName string) (*teleport.Cluster, error) {
+	configFileDir := path.Join(configDir, clusterName+".yaml")
+	cfg, err := config.New(log, clusterName, configFileDir)
+	if err != nil {
+		log.Fatalf("error during configuration: %v", err)
+	}
+
+	return teleport.NewCluster(ctx, cfg)
 }
